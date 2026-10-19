@@ -1,13 +1,13 @@
 {
-  "publisher": "Jannchie",
-  "name": "codetime",
+  "publisher": "jeevavarshan",
+  "name": "ember",
   "displayName": "%extension.name%",
   "version": "0.14.0",
   "description": "%extension.description%",
-  "homepage": "https://github.com/Data-Trekkers/codetime-vscode#readme",
+  "homepage": "https://github.com/Jeeva1070/ember#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Data-Trekkers/codetime-vscode"
+    "url": "https://github.com/Jeeva1070/ember"
   },
   "l10n": "./l10n",
   "keywords": [

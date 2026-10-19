@@ -68,7 +68,8 @@ export class CodeTime {
 
   private apiRequest(method: string, path: string, body?: any): Promise<{ body: string, statusCode: number }> {
     const serverUrl = vscode.workspace.getConfiguration('codetime').serverEntrypoint as string
-    const url = new URL(path, serverUrl)
+    const base = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`
+    const url = new URL(path.replace(/^\//, ''), base)
     const payload = body ? JSON.stringify(body) : undefined
     const proxy = this.getProxyUrl()
     const isHttpsTarget = url.protocol === 'https:'
