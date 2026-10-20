@@ -65,7 +65,7 @@
         },
         "codetime.serverEntrypoint": {
           "type": "string",
-          "default": "https://api.codetime.dev",
+          "default": "https://tvbiqpxhlxnpinhspvnn.supabase.co/functions/v1/ember",
           "description": "%config.serverEntrypoint.description%"
         },
         "codetime.proxy": {
