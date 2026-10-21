@@ -14,7 +14,7 @@ import { getGitCurrentBranch, getGitOriginUrl } from './utils'
 
 export class CodeTime {
   osName = osName()
-  out: vscode.OutputChannel = vscode.window.createOutputChannel('Codetime')
+  out: vscode.OutputChannel = vscode.window.createOutputChannel('Ember')
   private debounceTimer?: NodeJS.Timeout
   private secrets: vscode.SecretStorage
   private readonly platformArch = os.arch()
@@ -31,7 +31,7 @@ export class CodeTime {
   async setToken() {
     const token = await vscode.window.showInputBox({
       password: true,
-      placeHolder: vscode.l10n.t('CodeTime: Input Your Token (from: codetime.dev)'),
+      placeHolder: vscode.l10n.t('Ember: Input Your Token (from: codetime.dev)'),
     })
 
     if (token) {
