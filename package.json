@@ -2,7 +2,7 @@
   "publisher": "jeevavarshan",
   "name": "ember",
   "displayName": "%extension.name%",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "%extension.description%",
   "homepage": "https://github.com/Jeeva1070/ember#readme",
   "repository": {
@@ -116,7 +116,7 @@
   },
   "scripts": {
     "vscode:prepublish": "pnpm run package",
-    "vscode:package": "vsce package",
+    "vscode:package": "vsce package --no-dependencies",
     "vscode:publish": "vsce package && vsce publish",
     "compile": "webpack --devtool nosources-source-map --config ./build/node-extension.webpack.config.js",
     "watch": "webpack --watch --devtool nosources-source-map --config ./build/node-extension.webpack.config.js --stats-error-details",

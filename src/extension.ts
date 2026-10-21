@@ -22,14 +22,14 @@ async function loadLocalizationResources(context: vscode.ExtensionContext, langu
     localizationBundle = JSON.parse(l10nContent)
     loaded = true
   }
-  catch {}
+  catch { }
   if (!loaded) {
     try {
       const nlsContent = await fs.readFile(nlsFile, 'utf8')
       localizationBundle = JSON.parse(nlsContent)
       loaded = true
     }
-    catch {}
+    catch { }
   }
   if (!loaded) {
     localizationBundle = {}
@@ -68,7 +68,7 @@ export async function activate(context: vscode.ExtensionContext) {
     codetime.codeTimeInStatBar()
   })
   vscode.commands.registerCommand('codetime.toDashboard', () => {
-    const url = `https://codetime.dev/dashboard`
+    const url = `ember://dashboard`
     vscode.env.openExternal(vscode.Uri.parse(url))
   })
 
