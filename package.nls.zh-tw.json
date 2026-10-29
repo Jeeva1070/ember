@@ -1,5 +1,5 @@
 {
-  "extension.name": "CodeTime",
+  "extension.name": "Ember Time",
   "extension.description": "Codetime VSCode 擴充功能。編碼時間統計分析。",
   "command.getToken": "CodeTime: 輸入令牌",
   "command.toDashboard": "CodeTime: 瀏覽儀表板",

@@ -1,5 +1,5 @@
 {
-  "extension.name": "CodeTime",
+  "extension.name": "Ember Time",
   "extension.description": "Extensión Codetime para VSCode. Análisis estadístico del tiempo de código.",
   "command.getToken": "CodeTime: Introducir token",
   "command.toDashboard": "CodeTime: Ver panel",

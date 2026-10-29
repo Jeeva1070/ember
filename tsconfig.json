@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "es6",
+    "target": "ES2022",
     "lib": [
-      "es6",
+      "ES2022",
       "DOM"
     ],
     "rootDir": "src",
@@ -10,12 +10,8 @@
     "moduleResolution": "node",
     "strict": true,
     "outDir": "out",
-    "sourceMap": true, /* enable all strict type-checking options */
+    "sourceMap": true,
     "esModuleInterop": true
-    /* Additional Checks */
-    // "noImplicitReturns": true, /* Report error when not all code paths in function return a value. */
-    // "noFallthroughCasesInSwitch": true, /* Report errors for fallthrough cases in switch statement. */
-    // "noUnusedParameters": true,  /* Report errors on unused parameters. */
   },
   "exclude": [
     "node_modules",

@@ -1,15 +1,18 @@
+import type { CodeEvent } from './types'
 import { Buffer } from 'node:buffer'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import * as os from 'node:os'
 import process from 'node:process'
-import tls from 'node:tls'
 
+import tls from 'node:tls'
 import osName from 'os-name'
 import * as vscode from 'vscode'
 import * as events from './events'
 import { getDurationText } from './getDurationText'
+import { isProjectIgnored, sanitizeRelativePath, shouldIgnoreFile } from './privacy'
+import { EventQueue } from './queue'
 import { getGitCurrentBranch, getGitOriginUrl } from './utils'
 
 export class CodeTime {
@@ -20,12 +23,27 @@ export class CodeTime {
   private readonly platformArch = os.arch()
   private authRetryCount = 0
   private readonly maxAuthRetries = 3
+  private queue!: EventQueue
+  private latestDurationMinutes: number = 0
+  private storageDir: string = ''
 
   private debounce<T extends (...args: any[]) => void>(func: T, wait: number) {
     return (...args: Parameters<T>) => {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = setTimeout(() => func.apply(this, args), wait)
     }
+  }
+
+  public getConfig<T>(key: string, defaultValue: T): T {
+    const emberCfg = vscode.workspace.getConfiguration('ember').get<T>(key)
+    if (emberCfg !== undefined) {
+      return emberCfg
+    }
+    const codetimeCfg = vscode.workspace.getConfiguration('codetime').get<T>(key)
+    if (codetimeCfg !== undefined) {
+      return codetimeCfg
+    }
+    return defaultValue
   }
 
   async setToken() {
@@ -35,10 +53,21 @@ export class CodeTime {
     })
 
     if (token) {
-      await this.secrets.store('codetime.token', token)
-      this.token = token
-      this.getCurrentDuration(true)
+      await this.setTokenDirectly(token.trim(), true)
     }
+  }
+
+  async setTokenDirectly(token: string, showNotification = false) {
+    await this.secrets.store('ember.token', token)
+    await this.secrets.store('codetime.token', token)
+    this.token = token
+    this.resetAuthRetryCount()
+    this.getCurrentDuration(showNotification)
+    if (showNotification) {
+      vscode.window.showInformationMessage(vscode.l10n.t('Ember: Token updated successfully'))
+    }
+    // Flush any pending queue items
+    this.queue?.flush()
   }
 
   private statusBar: vscode.StatusBarItem = vscode.window.createStatusBarItem(
@@ -49,9 +78,28 @@ export class CodeTime {
   state: vscode.Memento
   token: string = ''
   inter!: NodeJS.Timeout
-  constructor(state: vscode.Memento, secrets: vscode.SecretStorage) {
+
+  constructor(state: vscode.Memento, secrets: vscode.SecretStorage, storageDir: string = '') {
     this.state = state
     this.secrets = secrets
+    this.storageDir = storageDir
+
+    const heartbeatSec = this.getConfig<number>('heartbeatInterval', 30)
+
+    this.queue = new EventQueue(
+      storageDir,
+      async (batch: CodeEvent[]) => {
+        if (this.token === '') {
+          throw new Error('No authentication token available')
+        }
+        for (const event of batch) {
+          await this.apiRequest('POST', '/v3/users/event-log', event)
+        }
+      },
+      msg => this.out.appendLine(msg),
+      heartbeatSec * 1000,
+    )
+
     this.initSetToken().then(() => {
       this.init()
     })
@@ -59,7 +107,7 @@ export class CodeTime {
 
   private getProxyUrl(): string {
     return (
-      vscode.workspace.getConfiguration('codetime').get<string>('proxy')
+      this.getConfig<string>('proxy', '')
       || process.env.HTTPS_PROXY || process.env.HTTP_PROXY
       || process.env.https_proxy || process.env.http_proxy
       || ''
@@ -67,7 +115,7 @@ export class CodeTime {
   }
 
   private apiRequest(method: string, path: string, body?: any): Promise<{ body: string, statusCode: number }> {
-    const serverUrl = vscode.workspace.getConfiguration('codetime').serverEntrypoint as string
+    const serverUrl = this.getConfig<string>('serverEntrypoint', 'https://tvbiqpxhlxnpinhspvnn.supabase.co/functions/v1/ember')
     const base = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`
     const url = new URL(path.replace(/^\//, ''), base)
     const payload = body ? JSON.stringify(body) : undefined
@@ -76,7 +124,7 @@ export class CodeTime {
     const targetPort = Number(url.port) || (isHttpsTarget ? 443 : 80)
 
     const baseHeaders: Record<string, string> = {
-      'User-Agent': 'CodeTime Client',
+      'User-Agent': 'Ember Client/VSCode',
       'Authorization': `Bearer ${this.token}`,
     }
     if (payload) {
@@ -268,20 +316,25 @@ export class CodeTime {
   }
 
   async initSetToken() {
-    const secretToken = await this.secrets.get('codetime.token')
-    const envToken = process.env.CODETIME_TOKEN
+    const emberToken = await this.secrets.get('ember.token')
+    const secretToken = emberToken || await this.secrets.get('codetime.token')
+    const envToken = process.env.EMBER_TOKEN || process.env.CODETIME_TOKEN
 
     if (secretToken) {
       this.token = secretToken
+      // Ensure both keys are populated for compatibility
+      await this.secrets.store('ember.token', secretToken)
     }
     else if (envToken) {
       this.token = envToken
+      await this.secrets.store('ember.token', envToken)
       await this.secrets.store('codetime.token', envToken)
     }
     else {
       const stateToken = this.state.get<string>('token')
       if (stateToken) {
         this.token = stateToken
+        await this.secrets.store('ember.token', stateToken)
         await this.secrets.store('codetime.token', stateToken)
         this.state.update('token', undefined)
       }
@@ -313,10 +366,11 @@ export class CodeTime {
 
   private init(): void {
     this.out.appendLine(`[Init] proxy=${this.redactUrlForLogging(this.getProxyUrl())}`)
-    this.out.appendLine(`[Init] serverEntrypoint=${vscode.workspace.getConfiguration('codetime').serverEntrypoint}`)
+    this.out.appendLine(`[Init] serverEntrypoint=${this.getConfig<string>('serverEntrypoint', '')}`)
     this.out.appendLine(`[Init] token=${this.token ? `***${this.token.slice(-4)}` : '(empty)'}`)
 
-    this.statusBar.text = `$(clock) ${vscode.l10n.t('CodeTime: Initializing...')}`
+    this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Initializing...')}`
+    this.statusBar.command = 'ember.status'
     this.statusBar.show()
     this.setupEventListeners()
     this.getCurrentDuration()
@@ -326,7 +380,6 @@ export class CodeTime {
   }
 
   private setupEventListeners(): void {
-    // subscribe to selection change and editor activation events
     const events: vscode.Disposable[] = []
     vscode.workspace.onDidChangeTextDocument(this.onEdit, this, events)
     vscode.window.onDidChangeActiveTextEditor(this.onEditor, this, events)
@@ -336,7 +389,7 @@ export class CodeTime {
     vscode.workspace.onDidSaveTextDocument(this.onSave, this, events)
     vscode.workspace.onDidCreateFiles(this.onCreate, this, events)
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('codetime')) {
+      if (e.affectsConfiguration('ember') || e.affectsConfiguration('codetime')) {
         this.getCurrentDuration()
       }
     })
@@ -345,17 +398,15 @@ export class CodeTime {
 
   private onEdit(e: vscode.TextDocumentChangeEvent) {
     let eventName = events.FILE_EDITED
-    // 如果 document 是 output channel 的话，不记录
     if (e.document.uri.scheme === 'output') {
       return
     }
 
-    if (e.contentChanges.length === 1
-      && /\r\n|\n|\r/.test(e.contentChanges[0].text)) {
+    if (e.contentChanges.length === 1 && /\r\n|\n|\r/.test(e.contentChanges[0].text)) {
       eventName = events.FILE_ADDED_LINE
       this.onChange(eventName)
     }
-    else if (Math.random() > 0.9) {
+    else {
       this.onChange(eventName)
     }
   }
@@ -369,7 +420,7 @@ export class CodeTime {
       return
     }
 
-    if (Math.random() > 0.9) {
+    if (Math.random() > 0.8) {
       this.onChange(events.CHANGE_EDITOR_SELECTION)
     }
   }
@@ -412,28 +463,40 @@ export class CodeTime {
   private onChange(eventName = 'unknown') {
     const editor = vscode.window.activeTextEditor
     const workspaceName = vscode.workspace.name
-    const workspaceRoot = vscode.workspace.workspaceFolders
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]
     if (workspaceRoot && editor) {
       const doc = editor.document
-      if (doc) {
+      if (doc && doc.uri.scheme !== 'output') {
         const lang = doc.languageId
         const absoluteFilePath = doc.fileName
-        let relativeFilePath = vscode.workspace.asRelativePath(
-          absoluteFilePath,
-        )
+        let relativeFilePath = vscode.workspace.asRelativePath(absoluteFilePath)
         if (relativeFilePath === absoluteFilePath) {
           relativeFilePath = '[other workspace]'
         }
 
-        if (relativeFilePath) {
+        // Privacy filters: check ignored projects and files
+        const ignoredProjects = this.getConfig<string[]>('ignoreProjects', [])
+        if (workspaceName && isProjectIgnored(workspaceName, ignoredProjects)) {
+          return
+        }
+
+        if (shouldIgnoreFile(relativeFilePath, workspaceRoot.uri.fsPath)) {
+          return
+        }
+
+        // Apply path obfuscation if enabled or if sensitive file
+        const obfuscate = this.getConfig<boolean>('obfuscateFilenames', false)
+        const sanitizedRelativePath = sanitizeRelativePath(relativeFilePath, obfuscate)
+
+        if (sanitizedRelativePath) {
           const time = Date.now()
           const origin = getGitOriginUrl()
           const branch = getGitCurrentBranch()
-          const data = {
+          const data: CodeEvent = {
             project: workspaceName,
             language: lang,
-            relativeFile: relativeFilePath,
-            absoluteFile: absoluteFilePath,
+            relativeFile: sanitizedRelativePath,
+            absoluteFile: obfuscate ? undefined : absoluteFilePath,
             editor: vscode.env.appName,
             platform: this.osName,
             eventTime: time,
@@ -443,23 +506,18 @@ export class CodeTime {
             gitBranch: branch,
             operationType: this.getOperationType(eventName),
           }
-          this.out.appendLine(JSON.stringify({ ...data, token: undefined }))
-          // Post data
+
+          this.out.appendLine(JSON.stringify(data))
+
           if (this.token === '') {
-            this.out.appendLine('Token is empty, cannot send event data')
             this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Without Token')}`
             this.statusBar.tooltip = vscode.l10n.t('Enter Token')
-            this.statusBar.command = 'codetime.getToken'
+            this.statusBar.command = 'ember.getToken'
             return
           }
-          this.apiRequest('POST', '/v3/users/event-log', data).catch((error: any) => {
-            if (error.response?.statusCode === 401) {
-              this.handleAuthError()
-            }
-            else {
-              this.out.appendLine(`Error: ${error}`)
-            }
-          })
+
+          // Enqueue event to resilient offline buffer
+          this.queue.enqueue(data)
         }
       }
     }
@@ -472,7 +530,7 @@ export class CodeTime {
       this.out.appendLine(`Authentication failed, retrying (${this.authRetryCount}/${this.maxAuthRetries})...`)
       this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Auth Failed')}`
       this.statusBar.tooltip = vscode.l10n.t('Ember: Authentication retry, please wait...')
-      this.statusBar.command = 'codetime.getToken'
+      this.statusBar.command = 'ember.getToken'
     }
     else {
       this.out.appendLine('Max authentication retries exceeded, token invalid')
@@ -484,35 +542,62 @@ export class CodeTime {
     this.authRetryCount = 0
     this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Token Invalid')}`
     this.statusBar.tooltip = vscode.l10n.t('Enter Token')
-    this.statusBar.command = 'codetime.getToken'
+    this.statusBar.command = 'ember.getToken'
   }
 
   private resetAuthRetryCount() {
     this.authRetryCount = 0
   }
 
+  private updateStatusBarTooltip(durationText: string, currentMode: string) {
+    const stats = this.queue.getStats()
+    const tooltip = new vscode.MarkdownString('', true)
+    tooltip.isTrusted = true
+    tooltip.supportHtml = true
+
+    tooltip.appendMarkdown(`### **Ember Time**\n\n`)
+    tooltip.appendMarkdown(`* **${currentMode}**: \`${durationText}\`\n`)
+
+    const activeProject = vscode.workspace.name || 'No Workspace'
+    tooltip.appendMarkdown(`* **Workspace**: \`${activeProject}\`\n`)
+
+    if (stats.queuedCount > 0) {
+      tooltip.appendMarkdown(`* **Sync**: 🟡 Offline (\`${stats.queuedCount}\` events pending sync)\n\n`)
+    }
+    else {
+      tooltip.appendMarkdown(`* **Sync**: 🟢 Connected & Synced\n\n`)
+    }
+
+    tooltip.appendMarkdown(`---\n\n`)
+    tooltip.appendMarkdown(`[📊 Dashboard](command:ember.toDashboard) &nbsp;|&nbsp; [⚙️ Change View](command:ember.codeTimeInStatusBar) &nbsp;|&nbsp; [ℹ️ Status Info](command:ember.status)`)
+
+    this.statusBar.tooltip = tooltip
+  }
+
   private getCurrentDuration(showSuccess = false) {
-    const config = vscode.workspace.getConfiguration('codetime')
-    const key = config.statusBarInfo
+    const key = this.getConfig<string>('statusBarInfo', 'Total')
     if (this.token === '') {
       this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Without Token')}`
       this.statusBar.tooltip = vscode.l10n.t('Enter Token')
-      this.statusBar.command = 'codetime.getToken'
+      this.statusBar.command = 'ember.getToken'
       return
     }
-    let currentLanguage = config.displayLanguage.title
-    if (currentLanguage === 'Auto') {
+
+    let currentLanguage = this.getConfig<any>('displayLanguage', { title: 'Auto' }).title
+    if (currentLanguage === 'Auto' || !currentLanguage) {
       currentLanguage = vscode.env.language
     }
-    this.statusBar.command = 'codetime.toDashboard'
-    this.statusBar.tooltip = vscode.l10n.t('Ember: Head to the dashboard for statistics')
+
+    this.statusBar.command = 'ember.status'
     const minutes = getMinutes(key)
     this.apiRequest('GET', `/v3/users/self/minutes?minutes=${minutes}`).then(async (res: any) => {
       const data = JSON.parse(res.body)
       const { minutes } = data
+      this.latestDurationMinutes = minutes
       this.out.appendLine(`Current duration: ${minutes} minutes`)
-      this.statusBar.text = `$(watch) ${await getDurationText(minutes, currentLanguage)}`
-      this.out.appendLine(await getDurationText(minutes, currentLanguage))
+      const formatted = await getDurationText(minutes, currentLanguage)
+      this.statusBar.text = `$(watch) ${formatted}`
+      this.updateStatusBarTooltip(formatted, key)
       this.resetAuthRetryCount()
       if (showSuccess) {
         vscode.window.showInformationMessage(vscode.l10n.t('Ember: Token validation succeeded'))
@@ -523,12 +608,9 @@ export class CodeTime {
       }
       else {
         this.out.appendLine(`[Duration] Network error: ${error.message || error}`)
-        if (error.code) {
-          this.out.appendLine(`[Duration] Error code: ${error.code}`)
-        }
         this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Network Error')}`
         this.statusBar.tooltip = vscode.l10n.t('Ember: Network connection failed')
-        this.statusBar.command = 'codetime.toDashboard'
+        this.statusBar.command = 'ember.status'
       }
     })
   }
@@ -559,15 +641,81 @@ export class CodeTime {
           }
         }
         vscode.workspace
-          .getConfiguration('codetime')
+          .getConfiguration('ember')
           .update('statusBarInfo', key, true)
-          .then(() => this.getCurrentDuration())
+          .then(() => {
+            vscode.workspace.getConfiguration('codetime').update('statusBarInfo', key, true)
+            this.getCurrentDuration()
+          })
       })
+  }
+
+  public async showStatusInfo() {
+    const stats = this.queue.getStats()
+    const mode = this.getConfig<string>('statusBarInfo', 'Total')
+    const lang = vscode.env.language
+    const duration = await getDurationText(this.latestDurationMinutes, lang)
+    const tokenDisplay = this.token ? `Active (***${this.token.slice(-4)})` : 'Not Configured'
+
+    const syncStatusText = stats.queuedCount > 0
+      ? `🟡 ${stats.queuedCount} events buffered offline (retrying)`
+      : `🟢 Synced with server`
+
+    const items: vscode.QuickPickItem[] = [
+      {
+        label: `$(watch) Duration: ${duration} (${mode})`,
+        description: `Current tracked code time`,
+      },
+      {
+        label: `$(cloud) Sync Status: ${syncStatusText}`,
+        description: stats.lastSyncTime ? `Last sync: ${new Date(stats.lastSyncTime).toLocaleTimeString()}` : 'No sync yet',
+      },
+      {
+        label: `$(key) Auth Token: ${tokenDisplay}`,
+        description: 'Click to update or re-enter your Ember token',
+      },
+      {
+        label: `$(dashboard) Open Dashboard`,
+        description: 'View graphs, languages, and project statistics',
+      },
+      {
+        label: `$(gear) Switch Display Mode (Today / 24h / Total)`,
+        description: `Currently showing: ${mode}`,
+      },
+      {
+        label: `$(sync) Force Sync Pending Events Now`,
+        description: `Trigger immediate queue flush`,
+      },
+    ]
+
+    const selected = await vscode.window.showQuickPick(items, {
+      title: 'Ember Time - Status & Options',
+      placeHolder: 'Select an action or view current status',
+    })
+
+    if (!selected) {
+      return
+    }
+
+    if (selected.label.includes('Open Dashboard')) {
+      vscode.commands.executeCommand('ember.toDashboard')
+    }
+    else if (selected.label.includes('Auth Token')) {
+      this.setToken()
+    }
+    else if (selected.label.includes('Switch Display Mode')) {
+      this.codeTimeInStatBar()
+    }
+    else if (selected.label.includes('Force Sync Pending Events')) {
+      await this.queue.flush()
+      vscode.window.showInformationMessage(`Ember: Force sync completed. Queued items: ${this.queue.getStats().queuedCount}`)
+    }
   }
 
   public dispose() {
     this.statusBar.dispose()
-    this.disposable.dispose()
+    this.disposable?.dispose()
+    this.queue?.dispose()
     clearInterval(this.inter)
   }
 }

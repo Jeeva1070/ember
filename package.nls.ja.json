@@ -1,5 +1,5 @@
 {
-  "extension.name": "CodeTime",
+  "extension.name": "Ember Time",
   "extension.description": "Codetime VSCode拡張機能。コーディング時間の統計分析。",
   "command.getToken": "CodeTime: トークンを入力",
   "command.toDashboard": "CodeTime: ダッシュボードを表示",

@@ -1,6 +1,6 @@
 {
   "publisher": "jeevavarshan",
-  "name": "ember",
+  "name": "ember-tracker",
   "displayName": "%extension.name%",
   "version": "0.14.1",
   "description": "%extension.description%",
@@ -33,6 +33,22 @@
   "contributes": {
     "commands": [
       {
+        "command": "ember.getToken",
+        "title": "%command.getToken%"
+      },
+      {
+        "command": "ember.toDashboard",
+        "title": "%command.toDashboard%"
+      },
+      {
+        "command": "ember.codeTimeInStatusBar",
+        "title": "%command.codeTimeInStatusBar%"
+      },
+      {
+        "command": "ember.status",
+        "title": "%command.status%"
+      },
+      {
         "command": "codetime.getToken",
         "title": "%command.getToken%"
       },
@@ -48,7 +64,7 @@
     "configuration": {
       "title": "%config.title%",
       "properties": {
-        "codetime.statusBarInfo": {
+        "ember.statusBarInfo": {
           "type": "string",
           "default": "Total",
           "enum": [
@@ -63,17 +79,35 @@
           ],
           "description": "%config.statusBarInfo.description%"
         },
-        "codetime.serverEntrypoint": {
+        "ember.serverEntrypoint": {
           "type": "string",
           "default": "https://tvbiqpxhlxnpinhspvnn.supabase.co/functions/v1/ember",
           "description": "%config.serverEntrypoint.description%"
         },
-        "codetime.proxy": {
+        "ember.proxy": {
           "type": "string",
           "default": "",
           "description": "%config.proxy.description%"
         },
-        "codetime.displayLanguage.title": {
+        "ember.obfuscateFilenames": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.obfuscateFilenames.description%"
+        },
+        "ember.ignoreProjects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "%config.ignoreProjects.description%"
+        },
+        "ember.heartbeatInterval": {
+          "type": "number",
+          "default": 30,
+          "description": "%config.heartbeatInterval.description%"
+        },
+        "ember.displayLanguage.title": {
           "type": "string",
           "default": "Auto",
           "enum": [
@@ -110,6 +144,26 @@
           ],
           "title": "%codetime.displayLanguage.title%",
           "description": "%codetime.displayLanguage.description%"
+        },
+        "codetime.statusBarInfo": {
+          "type": "string",
+          "default": "Total",
+          "enum": [
+            "Total",
+            "Today",
+            "24h"
+          ],
+          "description": "(Deprecated, use ember.statusBarInfo) %config.statusBarInfo.description%"
+        },
+        "codetime.serverEntrypoint": {
+          "type": "string",
+          "default": "https://tvbiqpxhlxnpinhspvnn.supabase.co/functions/v1/ember",
+          "description": "(Deprecated, use ember.serverEntrypoint) %config.serverEntrypoint.description%"
+        },
+        "codetime.proxy": {
+          "type": "string",
+          "default": "",
+          "description": "(Deprecated, use ember.proxy) %config.proxy.description%"
         }
       }
     }

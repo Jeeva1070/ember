@@ -1,65 +1,101 @@
-# Code Time
+# Ember Time — Developer Productivity & Code Tracking
 
-[![CodeTime Badge](https://shields.jannchie.com/endpoint?style=social&color=0284c7&url=https%3A%2F%2Fapi.codetime.dev%2Fv3%2Fusers%2Fshield%3Fuid%3D2%26tag%3Dcodetime)](https://codetime.dev)
-![rating](https://vsmarketplacebadges.dev/rating/Jannchie.codetime.png)
-![installs](https://vsmarketplacebadges.dev/installs/Jannchie.codetime.png)
+<p align="center">
+  <img src="images/logo.png" width="128" height="128" alt="Ember Time Logo" />
+</p>
 
-CodeTime vscode plugin. Statistical analysis of programming time.
+<p align="center">
+  <strong>Automatic, privacy-first code time tracking and deep work analytics for software engineers.</strong>
+</p>
 
-Web Site: [Code Time](https://codetime.dev)
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#privacy--security">Privacy</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#commands">Commands</a>
+</p>
 
-## Previews
+---
 
-![Dash board](images/preview.png)
+## ⚡ Features
 
-## Usage
+* **⏱️ Precision Time Tracking**: Automatically tracks time spent across projects, languages, and git branches as you code.
+* **🛡️ Privacy-First Architecture**: Only records activity metadata. Zero source code or keystroke contents are ever inspected or transmitted.
+* **📶 Offline Resilient Queue**: Coding on an airplane or disconnected? Events are buffered safely to local encrypted storage and seamlessly synced when connectivity returns.
+* **⚡ One-Click Sign In**: Sign in effortlessly via your browser with direct VS Code deep-linking (`vscode://`).
+* **📊 Rich Status Bar & Insights**: View your daily or all-time stats directly in your editor status bar with interactive Markdown tooltips.
+* **🌐 Multilingual Support**: Built-in support for 13+ languages (English, Urdu, Hindi, Japanese, Spanish, German, French, etc.).
+* **🔒 Privacy Guard**: Automatic `.env` & secrets masking, `.emberignore` workspace exclusion, and file path obfuscation modes.
 
-1. Login from web site: [CodeTime](https://codetime.dev).
-2. Get token from web site: [CodeTime / settings](https://codetime.dev/dashboard/settings).
-3. In VSCode, Press <kbd>F1</kbd>, enter `token` to find the command: `CodeTime: Enter Token`, Press <kbd>Enter</kbd> and then input your token.
-4. Write some code, visit the dashboard and check if data is available.
+---
 
-> If using an online IDE like [GitHub Codespaces](https://docs.github.com/en/codespaces), add your token to global ENV variable `CODETIME_TOKEN`.
+## 🚀 Quick Start
 
-## Settings
+### Step 1: Install the Extension
+Install **Ember Time** (`jeevavarshan.ember-tracker`) from the Visual Studio Code Marketplace or Open VSX.
 
-### Status Bar Info
+### Step 2: Sign In / Authenticate
+1. Press `Cmd + Shift + P` (or `Ctrl + Shift + P` on Windows/Linux).
+2. Type **`Ember: Enter token`** and paste your API token, or click **"Sign in via Browser"** from your dashboard to connect in one click.
 
-You are able to select what time to show in your status bar by:
+### Step 3: Code!
+Your coding time will begin tracking immediately in the status bar at the bottom of your editor.
 
-- Press <kbd>Ctrl</kbd> (or <kbd>command</kbd> in Mac OS) + <kbd>,</kbd>, then search `codetime` to find the options.
-- Press <kbd>F1</kbd>, enter `codetime` to find the options.
+---
 
-Supported options are:
+## 🎛️ Status Bar Modes
 
-- total: Show total code time
-- average: Show average code time.
-- today: Show today code time.
+Click on the status bar or press `Cmd + Shift + P` $\rightarrow$ **`Ember: Select status bar info`** to toggle:
 
-### Language / displayLanguage
+| Mode | Description |
+| :--- | :--- |
+| **`Total`** *(Default)* | Cumulative all-time coding duration across all sessions. |
+| **`Today`** | Time spent coding today (resets every midnight in your local timezone). |
+| **`24h`** | Rolling code time over the preceding 24-hour period. |
 
-#### Purpose
+---
 
-The `displayLanguage` option is used to switch the display language of the plugin interface. You can choose a specific language as needed, or use "auto" mode to automatically follow VSCode's interface language.
+## 🔐 Privacy & Security
 
-#### Supported Languages
+We believe your intellectual property must remain entirely yours:
 
-- `auto`: Auto mode, follows VSCode's current interface language
-- `en`: English
-- `zh-cn`: Simplified Chinese
-- `zh-tw`: Traditional Chinese
-- `de`: Deutsch (German)
-- `es`: Español (Spanish)
-- `fr`: Français (French)
-- `hi`: हिन्दी (Hindi)
-- `it`: Italiano (Italian)
-- `ja`: 日本語 (Japanese)
-- `ko`: 한국어 (Korean)
-- `pt-br`: Português (Brasil) (Portuguese-Brazil)
-- `ru`: Русский (Russian)
-- `ur`: اردو (Urdu)
+* **No Code Uploaded**: We never read, buffer, or upload the contents of your files.
+* **Automatic Secrets Filtering**: Files matching `.env`, SSH keys (`id_rsa`), certificates (`*.pem`, `*.key`), and credential files are automatically ignored.
+* **`.emberignore`**: Add an `.emberignore` file to any workspace root to exclude specific files or directories.
+* **Path Obfuscation**: Toggle `"ember.obfuscateFilenames": true` to mask file names while preserving language breakdown.
 
-#### How to Switch
+Read our complete [Privacy Policy](PRIVACY.md) for full architectural details.
 
-1. Press <kbd>Ctrl</kbd> (or <kbd>command</kbd> on Mac) + <kbd>,</kbd> to open settings, search for `codetime displayLanguage`.
-2. Or press <kbd>F1</kbd>, enter `codetime`, and find the `displayLanguage` option in settings to switch.
+---
+
+## ⚙️ Configuration
+
+Open your VS Code Settings (`Cmd + ,`) and search for `ember`:
+
+| Setting | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `ember.statusBarInfo` | `string` | `"Total"` | Time display mode: `Total`, `Today`, or `24h`. |
+| `ember.serverEntrypoint` | `string` | *(Ember Cloud)* | Backend reporting endpoint for synchronization. |
+| `ember.obfuscateFilenames` | `boolean` | `false` | Mask file names in activity logs for heightened privacy. |
+| `ember.ignoreProjects` | `array` | `[]` | List of project names or glob patterns to exclude from tracking. |
+| `ember.heartbeatInterval` | `number` | `30` | Interval in seconds to batch and sync events to the server. |
+| `ember.proxy` | `string` | `""` | Custom HTTP/HTTPS proxy URL (e.g. `http://127.0.0.1:8080`). |
+| `ember.displayLanguage.title` | `string` | `"Auto"` | Interface language (Auto, English, Urdu, Japanese, etc.). |
+
+---
+
+## ⌨️ Command Palette Shortcuts
+
+| Command | Action |
+| :--- | :--- |
+| **`Ember: Enter token`** | Configure or update your user token. |
+| **`Ember: Select status bar info`** | Switch between Today, Total, and 24h view. |
+| **`Ember: Show Status & Sync Info`** | View sync status, queue depth, and quick actions. |
+| **`Ember: Browse dashboard`** | Open your personal analytics dashboard. |
+
+---
+
+## 📄 License
+
+MIT © [Jeeva Varshan](https://github.com/Jeeva1070)

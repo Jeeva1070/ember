@@ -1,4 +1,5 @@
-import { formatDuration, type Locale } from 'date-fns'
+import type { Locale } from 'date-fns'
+import { formatDuration } from 'date-fns'
 
 export const urduLocale: Locale = {
   code: 'ur',
@@ -8,16 +9,16 @@ export const urduLocale: Locale = {
   formatLong: {
     date: () => '',
     time: () => '',
-    dateTime: () => ''
+    dateTime: () => '',
   },
   formatRelative: () => '',
   localize: {
-    ordinalNumber: (n) => `${n}`,
+    ordinalNumber: n => `${n}`,
     era: () => '',
     quarter: () => '',
     month: () => '',
     day: () => '',
-    dayPeriod: () => ''
+    dayPeriod: () => '',
   },
   match: {
     ordinalNumber: () => null,
@@ -25,9 +26,9 @@ export const urduLocale: Locale = {
     quarter: () => null,
     month: () => null,
     day: () => null,
-    dayPeriod: () => null
+    dayPeriod: () => null,
   },
-  options: { weekStartsOn: 0, firstWeekContainsDate: 1 }
+  options: { weekStartsOn: 0, firstWeekContainsDate: 1 },
 }
 
 const localeMap: Record<string, () => Promise<any>> = {
@@ -43,7 +44,7 @@ const localeMap: Record<string, () => Promise<any>> = {
   'ru': () => import('date-fns/locale/ru'),
   'ko': () => import('date-fns/locale/ko'),
   'hi': () => import('date-fns/locale/hi'),
-  'ur': async () => urduLocale
+  'ur': async () => urduLocale,
 }
 
 async function getLocale(locale: string = 'en') {
@@ -54,7 +55,7 @@ async function getLocale(locale: string = 'en') {
 
 async function toUrduNumber(n: number): Promise<string> {
   const urduDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹']
-  return n.toString().split('').map(d => urduDigits[+d] || d).join('')
+  return [...n.toString()].map(d => urduDigits[+d] || d).join('')
 }
 
 /**
@@ -79,10 +80,14 @@ export async function getDurationText(minutes: number, locale: string = 'en'): P
     // Using custom Urdu numbers & text because date-fns doesn't support Urdu yet
     // Pending PR: https://github.com/date-fns/date-fns/pull/3776
 
-    if (hours > 0) parts.push(`${await toUrduNumber(hours)} گھنٹے`)
-    if (mins > 0) parts.push(`${await toUrduNumber(mins)} منٹ`)
+    if (hours > 0) {
+      parts.push(`${await toUrduNumber(hours)} گھنٹے`)
+    }
+    if (mins > 0) {
+      parts.push(`${await toUrduNumber(mins)} منٹ`)
+    }
     text = parts.join(' ')
   }
-  
+
   return text
 }
