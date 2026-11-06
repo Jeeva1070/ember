@@ -138,7 +138,7 @@
   "scripts": {
     "vscode:prepublish": "pnpm run package",
     "vscode:package": "vsce package --no-dependencies",
-    "vscode:publish": "vsce package && vsce publish",
+    "vscode:publish": "vsce publish --no-dependencies",
     "compile": "webpack --devtool nosources-source-map --config ./build/node-extension.webpack.config.js",
     "watch": "webpack --watch --devtool nosources-source-map --config ./build/node-extension.webpack.config.js --stats-error-details",
     "package": "webpack --mode production --config ./build/node-extension.webpack.config.js ",
