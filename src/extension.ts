@@ -64,6 +64,14 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ember.activityReport', () => {
       codetime.showActivityReport()
     }),
+    vscode.commands.registerCommand('ember.supabaseSignIn', async () => {
+      try {
+        await codetime.startSupabaseSignIn()
+      }
+      catch (error) {
+        vscode.window.showErrorMessage(`Ember: Supabase sign-in failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }),
     vscode.commands.registerCommand('ember.toDashboard', () => {
       const url = `ember://dashboard`
       vscode.env.openExternal(vscode.Uri.parse(url)).then(
@@ -91,10 +99,23 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // OAuth / Browser login UriHandler (supports vscode://jeevavarshan.ember-tracker/auth?token=...)
     vscode.window.registerUriHandler({
-      handleUri(uri: vscode.Uri) {
+      async handleUri(uri: vscode.Uri) {
         const query = new URLSearchParams(uri.query)
         const token = query.get('token')
-        if (token) {
+        const code = query.get('code')
+        const authError = query.get('error_description') || query.get('error')
+        if (authError) {
+          vscode.window.showErrorMessage(`Ember: Supabase sign-in was not completed: ${authError}`)
+        }
+        else if (code) {
+          try {
+            await codetime.handleSupabaseAuthCallback(uri)
+          }
+          catch (error) {
+            vscode.window.showErrorMessage(`Ember: Supabase sign-in failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+        else if (token) {
           codetime.setTokenDirectly(token, true)
           vscode.window.showInformationMessage('Ember: Successfully connected! Time tracking is now active.')
         }

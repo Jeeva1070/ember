@@ -49,6 +49,10 @@
         "title": "Ember: Coding activity report"
       },
       {
+        "command": "ember.supabaseSignIn",
+        "title": "Ember: Sign in to Supabase activity sync"
+      },
+      {
         "command": "codetime.getToken",
         "title": "%command.getToken%"
       },
@@ -64,6 +68,16 @@
           "type": "string",
           "default": "https://tvbiqpxhlxnpinhspvnn.supabase.co/functions/v1/ember",
           "description": "%config.serverEntrypoint.description%"
+        },
+        "ember.supabaseUrl": {
+          "type": "string",
+          "default": "https://tvbiqpxhlxnpinhspvnn.supabase.co",
+          "description": "Supabase project URL used for authenticated activity reports."
+        },
+        "ember.supabaseAnonKey": {
+          "type": "string",
+          "default": "",
+          "description": "Supabase anon/public key. Never use a service-role key here."
         },
         "ember.proxy": {
           "type": "string",

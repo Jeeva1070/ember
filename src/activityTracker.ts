@@ -1,14 +1,17 @@
 import type * as vscode from 'vscode'
+import { randomUUID } from 'node:crypto'
 
 export type ActivityPeriod = 'week' | 'month' | 'year'
 
 export interface CodingSession {
+  id: string
   startedAt: number
   lastActivityAt: number
   activeSeconds: number
   project: string
   languages: string[]
   eventCount: number
+  syncedEventCount?: number
   dailyActiveSeconds: Record<string, number>
 }
 
@@ -18,14 +21,24 @@ const STORAGE_KEY = 'ember.codingSessions'
 
 export class ActivityTracker {
   private sessions: CodingSession[]
+  private readonly pendingSessions = new Set<string>()
   private saveTimer?: NodeJS.Timeout
   private saveQueue: Promise<void> = Promise.resolve()
+  private needsPersistence = false
 
   constructor(
     private readonly state: vscode.Memento,
     private readonly log: (message: string) => void = () => {},
   ) {
     this.sessions = this.loadSessions()
+    for (const session of this.sessions) {
+      if (session.syncedEventCount !== session.eventCount) {
+        this.pendingSessions.add(session.id)
+      }
+    }
+    if (this.needsPersistence) {
+      this.scheduleSave()
+    }
   }
 
   recordActivity(timestamp: number, project: string, language: string): void {
@@ -47,17 +60,21 @@ export class ActivityTracker {
           previousActivityAt + activeInterval,
         )
       }
+      this.pendingSessions.add(lastSession.id)
     }
     else {
-      this.sessions.push({
+      const session: CodingSession = {
+        id: randomUUID(),
         startedAt: timestamp,
         lastActivityAt: timestamp,
         activeSeconds: 0,
         project,
         languages: language ? [language] : [],
         eventCount: 1,
-        dailyActiveSeconds: {},
-      })
+        dailyActiveSeconds: { [getLocalDateKey(new Date(timestamp))]: 0 },
+      }
+      this.sessions.push(session)
+      this.pendingSessions.add(session.id)
     }
 
     this.scheduleSave()
@@ -69,6 +86,30 @@ export class ActivityTracker {
       languages: [...session.languages],
       dailyActiveSeconds: { ...session.dailyActiveSeconds },
     }))
+  }
+
+  getPendingSessions(limit: number): CodingSession[] {
+    const pending = this.sessions.filter(session => this.pendingSessions.has(session.id))
+    return pending.slice(0, limit).map(session => ({
+      ...session,
+      languages: [...session.languages],
+      dailyActiveSeconds: { ...session.dailyActiveSeconds },
+    }))
+  }
+
+  getPendingSessionCount(): number {
+    return this.pendingSessions.size
+  }
+
+  markSessionsSynced(synced: CodingSession[]): void {
+    for (const session of synced) {
+      const current = this.sessions.find(item => item.id === session.id)
+      if (current?.eventCount === session.eventCount) {
+        current.syncedEventCount = session.eventCount
+        this.pendingSessions.delete(session.id)
+      }
+    }
+    this.scheduleSave()
   }
 
   async flush(): Promise<void> {
@@ -83,7 +124,18 @@ export class ActivityTracker {
       return []
     }
 
-    return stored.filter(value => isCodingSession(value))
+    const sessions = stored.filter(value => isCodingSession(value))
+    for (const session of sessions) {
+      if (!session.id) {
+        session.id = randomUUID()
+        this.needsPersistence = true
+      }
+      if (Object.keys(session.dailyActiveSeconds).length === 0) {
+        session.dailyActiveSeconds[getLocalDateKey(new Date(session.startedAt))] = 0
+        this.needsPersistence = true
+      }
+    }
+    return sessions
   }
 
   private scheduleSave(): void {
@@ -158,14 +210,25 @@ function isCodingSession(value: unknown): value is CodingSession {
     return false
   }
   const session = value as Partial<CodingSession>
-  return Number.isFinite(session.startedAt)
-    && Number.isFinite(session.lastActivityAt)
-    && Number.isFinite(session.activeSeconds)
+  return (session.id === undefined || typeof session.id === 'string')
+    && Number.isSafeInteger(session.startedAt)
+    && Number.isSafeInteger(session.lastActivityAt)
+    && typeof session.activeSeconds === 'number'
+    && Number.isInteger(session.activeSeconds)
+    && session.activeSeconds >= 0
     && typeof session.project === 'string'
     && Array.isArray(session.languages)
     && session.languages.every(language => typeof language === 'string')
+    && typeof session.eventCount === 'number'
     && Number.isInteger(session.eventCount)
+    && session.eventCount > 0
+    && isValidSyncedEventCount(session.syncedEventCount, session.eventCount)
     && !!session.dailyActiveSeconds
     && typeof session.dailyActiveSeconds === 'object'
-    && Object.values(session.dailyActiveSeconds).every(seconds => Number.isFinite(seconds) && seconds >= 0)
+    && Object.values(session.dailyActiveSeconds).every(seconds => Number.isInteger(seconds) && seconds >= 0)
+}
+
+function isValidSyncedEventCount(syncedEventCount: number | undefined, eventCount: number): boolean {
+  return syncedEventCount === undefined
+    || (Number.isInteger(syncedEventCount) && syncedEventCount >= 0 && syncedEventCount <= eventCount)
 }

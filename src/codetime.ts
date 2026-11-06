@@ -1,6 +1,7 @@
 import type { ActivityPeriod, CodingSession } from './activityTracker'
 import type { CodeEvent } from './types'
 import { Buffer } from 'node:buffer'
+import { createHash, randomBytes } from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
@@ -17,6 +18,20 @@ import { isProjectIgnored, sanitizeRelativePath, shouldIgnoreFile } from './priv
 import { EventQueue } from './queue'
 import { getGitCurrentBranch, getGitOriginUrl } from './utils'
 
+interface SupabaseAuthSession {
+  access_token: string
+  refresh_token: string
+  expires_at: number
+}
+
+interface ActivityReportResponse {
+  from: string
+  to: string
+  total_active_seconds: number
+  total_sessions: number
+  days: Array<{ date: string, active_seconds: number, session_count: number }>
+}
+
 export class CodeTime {
   osName = osName()
   out: vscode.OutputChannel = vscode.window.createOutputChannel('Ember')
@@ -27,6 +42,9 @@ export class CodeTime {
   private readonly maxAuthRetries = 3
   private queue!: EventQueue
   private activityTracker: ActivityTracker
+  private activitySyncTimer?: NodeJS.Timeout
+  private isSyncingActivity = false
+  private supabaseRefreshPromise?: Promise<string>
   private latestDurationMinutes: number = 0
   private durationDateKey = getLocalDateKey()
   private durationRequestId = 0
@@ -84,6 +102,240 @@ export class CodeTime {
     this.queue?.flush()
   }
 
+  public async startSupabaseSignIn(): Promise<void> {
+    const { url, anonKey } = this.getSupabaseConfig()
+    if (!anonKey) {
+      throw new Error('Set ember.supabaseAnonKey to your Supabase project anon/public key before signing in.')
+    }
+
+    const email = await vscode.window.showInputBox({
+      prompt: 'Enter the email address for your Ember account',
+      placeHolder: 'you@example.com',
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        const parts = value.trim().split('@')
+        const localPart = parts.at(0) ?? ''
+        const domain = parts.at(1) ?? ''
+        const valid = value.length <= 254
+          && localPart.length > 0
+          && localPart.length <= 64
+          && domain?.includes('.') === true
+          && domain.length <= 253
+          && !domain.startsWith('.')
+          && !domain.endsWith('.')
+          && parts.length === 2
+        return valid ? undefined : 'Enter a valid email address.'
+      },
+    })
+    if (!email) {
+      return
+    }
+
+    const verifier = randomBytes(32).toString('base64url')
+    const challenge = createHash('sha256').update(verifier).digest('base64url')
+    const callback = this.getSupabaseCallbackUri()
+    await this.secrets.store('ember.supabase.pkceVerifier', verifier)
+
+    try {
+      await this.apiRequest('POST', '/auth/v1/otp', {
+        email: email.trim(),
+        create_user: true,
+        code_challenge: challenge,
+        code_challenge_method: 's256',
+      }, {
+        baseUrl: url,
+        headers: { apikey: anonKey, RedirectTo: callback },
+        omitAuthorization: true,
+      })
+      vscode.window.showInformationMessage(`Ember: Sign-in link sent to ${email.trim()}. Open it to finish connecting.`)
+    }
+    catch (error) {
+      await this.secrets.delete('ember.supabase.pkceVerifier')
+      throw error
+    }
+  }
+
+  public async handleSupabaseAuthCallback(uri: vscode.Uri): Promise<void> {
+    const query = new URLSearchParams(uri.query)
+    const code = query.get('code')
+    if (!code) {
+      throw new Error('Supabase sign-in callback did not include an authorization code.')
+    }
+    const { url, anonKey } = this.getSupabaseConfig()
+    const verifier = await this.secrets.get('ember.supabase.pkceVerifier')
+    if (!anonKey || !verifier) {
+      throw new Error('Sign-in could not be completed. Start the Supabase sign-in flow again.')
+    }
+
+    const response = await this.apiRequest('POST', '/auth/v1/token?grant_type=pkce', {
+      auth_code: code,
+      code_verifier: verifier,
+    }, {
+      baseUrl: url,
+      headers: { apikey: anonKey },
+      omitAuthorization: true,
+    })
+    const session = JSON.parse(response.body) as Partial<SupabaseAuthSession> & { expires_in?: number }
+    if (!session.access_token || !session.refresh_token) {
+      throw new Error('Supabase returned an incomplete sign-in session.')
+    }
+    const expiresAt = session.expires_at ?? Math.floor(Date.now() / 1000) + (session.expires_in ?? 3600)
+    await this.secrets.store('ember.supabase.auth', JSON.stringify({
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      expires_at: expiresAt,
+    } satisfies SupabaseAuthSession))
+    await this.secrets.delete('ember.supabase.pkceVerifier')
+    vscode.window.showInformationMessage('Ember: Supabase sign-in completed. Activity reports will sync to your account.')
+    try {
+      await this.syncActivitySessions()
+      if (this.activityTracker.getPendingSessionCount() > 0) {
+        vscode.window.showWarningMessage('Ember: Some previous sessions are still syncing and will continue in the background.')
+      }
+    }
+    catch (error) {
+      vscode.window.showWarningMessage(`Ember: Signed in, but activity sync failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private getSupabaseConfig(): { url: string, anonKey: string } {
+    const url = this.getConfig<string>('supabaseUrl', 'https://tvbiqpxhlxnpinhspvnn.supabase.co').replace(/\/+$/, '')
+    let parsedUrl: URL
+    try {
+      parsedUrl = new URL(url)
+    }
+    catch {
+      throw new Error('ember.supabaseUrl must be a valid HTTPS URL.')
+    }
+    if (parsedUrl.protocol !== 'https:'
+      || parsedUrl.username.length > 0
+      || parsedUrl.password.length > 0
+      || parsedUrl.pathname !== '/'
+      || parsedUrl.search.length > 0
+      || parsedUrl.hash.length > 0) {
+      throw new Error('ember.supabaseUrl must be an HTTPS project URL without a path, credentials, or query.')
+    }
+    return {
+      url,
+      anonKey: this.getConfig<string>('supabaseAnonKey', '').trim(),
+    }
+  }
+
+  private getSupabaseCallbackUri(): string {
+    return `${vscode.env.uriScheme}://jeevavarshan.ember-tracker/auth`
+  }
+
+  private async getSupabaseAccessToken(): Promise<string | undefined> {
+    const { url, anonKey } = this.getSupabaseConfig()
+    const rawSession = await this.secrets.get('ember.supabase.auth')
+    if (!rawSession || !anonKey) {
+      return undefined
+    }
+
+    let session: SupabaseAuthSession
+    try {
+      const parsed = JSON.parse(rawSession) as Partial<SupabaseAuthSession>
+      if (typeof parsed.access_token !== 'string'
+        || parsed.access_token.length === 0
+        || typeof parsed.refresh_token !== 'string'
+        || parsed.refresh_token.length === 0
+        || typeof parsed.expires_at !== 'number'
+        || !Number.isSafeInteger(parsed.expires_at)) {
+        throw new TypeError('Invalid Supabase session')
+      }
+      session = parsed as SupabaseAuthSession
+    }
+    catch {
+      await this.secrets.delete('ember.supabase.auth')
+      throw new Error('Stored Supabase sign-in data is invalid. Sign in again.')
+    }
+    if (session.expires_at > Math.floor(Date.now() / 1000) + 60) {
+      return session.access_token
+    }
+
+    if (this.supabaseRefreshPromise) {
+      return this.supabaseRefreshPromise
+    }
+
+    const refreshPromise = this.refreshSupabaseSession(url, anonKey, session)
+    this.supabaseRefreshPromise = refreshPromise
+    try {
+      return await refreshPromise
+    }
+    finally {
+      if (this.supabaseRefreshPromise === refreshPromise) {
+        this.supabaseRefreshPromise = undefined
+      }
+    }
+  }
+
+  private async refreshSupabaseSession(url: string, anonKey: string, session: SupabaseAuthSession): Promise<string> {
+    const response = await this.apiRequest('POST', '/auth/v1/token?grant_type=refresh_token', {
+      refresh_token: session.refresh_token,
+    }, {
+      baseUrl: url,
+      headers: { apikey: anonKey },
+      omitAuthorization: true,
+    })
+    const refreshed = JSON.parse(response.body) as Partial<SupabaseAuthSession> & { expires_in?: number }
+    if (!refreshed.access_token || !refreshed.refresh_token) {
+      throw new Error('Supabase did not return a valid refreshed session.')
+    }
+    const expiresAt = refreshed.expires_at ?? Math.floor(Date.now() / 1000) + (refreshed.expires_in ?? 3600)
+    const updatedSession: SupabaseAuthSession = {
+      access_token: refreshed.access_token,
+      refresh_token: refreshed.refresh_token,
+      expires_at: expiresAt,
+    }
+    await this.secrets.store('ember.supabase.auth', JSON.stringify(updatedSession))
+    return updatedSession.access_token
+  }
+
+  private async syncActivitySessions(): Promise<void> {
+    if (this.isSyncingActivity) {
+      return
+    }
+    this.isSyncingActivity = true
+    try {
+      const accessToken = await this.getSupabaseAccessToken()
+      if (!accessToken) {
+        return
+      }
+      await this.activityTracker.flush()
+      const { url, anonKey } = this.getSupabaseConfig()
+      let batchesSent = 0
+      while (batchesSent < 10) {
+        const batch = this.activityTracker.getPendingSessions(50)
+        if (batch.length === 0) {
+          break
+        }
+        await this.apiRequest('POST', '/functions/v1/coding-activity/sessions/sync', {
+          sessions: batch.map(session => ({
+            id: session.id,
+            startedAt: session.startedAt,
+            lastActivityAt: session.lastActivityAt,
+            activeSeconds: session.activeSeconds,
+            project: session.project,
+            languages: session.languages,
+            eventCount: session.eventCount,
+            daily_active_seconds: session.dailyActiveSeconds,
+          })),
+        }, {
+          baseUrl: url,
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${accessToken}`,
+          },
+        })
+        this.activityTracker.markSessionsSynced(batch)
+        batchesSent++
+      }
+    }
+    finally {
+      this.isSyncingActivity = false
+    }
+  }
+
   private statusBar: vscode.StatusBarItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Left,
   )
@@ -97,7 +349,7 @@ export class CodeTime {
     this.state = state
     this.secrets = secrets
     this.storageDir = storageDir
-    this.activityTracker = new ActivityTracker(state, msg => this.debugLog(msg))
+    this.activityTracker = new ActivityTracker(state, msg => this.out.appendLine(msg))
 
     const heartbeatSec = this.getConfig<number>('heartbeatInterval', 30)
 
@@ -129,11 +381,17 @@ export class CodeTime {
     )
   }
 
-  private apiRequest(method: string, path: string, body?: any): Promise<{ body: string, statusCode: number }> {
-    const serverUrl = this.getConfig<string>('serverEntrypoint', 'https://tvbiqpxhlxnpinhspvnn.supabase.co/functions/v1/ember')
+  private apiRequest(
+    method: string,
+    path: string,
+    body?: unknown,
+    options: { baseUrl?: string, headers?: Record<string, string>, omitAuthorization?: boolean } = {},
+  ): Promise<{ body: string, statusCode: number }> {
+    const serverUrl = options.baseUrl
+      ?? this.getConfig<string>('serverEntrypoint', 'https://tvbiqpxhlxnpinhspvnn.supabase.co/functions/v1/ember')
     const base = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`
     const url = new URL(path.replace(/^\//, ''), base)
-    const payload = body ? JSON.stringify(body) : undefined
+    const payload = body === undefined ? undefined : JSON.stringify(body)
     const proxy = this.getProxyUrl()
     const isHttpsTarget = url.protocol === 'https:'
     const targetPort = Number(url.port) || (isHttpsTarget ? 443 : 80)
@@ -141,6 +399,10 @@ export class CodeTime {
     const baseHeaders: Record<string, string> = {
       'User-Agent': 'Ember Client/VSCode',
       'Authorization': `Bearer ${this.token}`,
+    }
+    Object.assign(baseHeaders, options.headers)
+    if (options.omitAuthorization) {
+      delete baseHeaders.Authorization
     }
     if (payload) {
       baseHeaders['Content-Type'] = 'application/json'
@@ -164,7 +426,7 @@ export class CodeTime {
       }
 
       // No proxy: use Node's http(s) client directly
-      if (!proxy) {
+      if (proxy.length === 0) {
         const lib = isHttpsTarget ? https : http
         const req = lib.request({
           method,
@@ -356,7 +618,10 @@ export class CodeTime {
     }
 
     if (this.token === '') {
-      await this.setToken()
+      const supabaseAnonKey = this.getConfig<string>('supabaseAnonKey', '').trim()
+      if (supabaseAnonKey.length === 0) {
+        await this.setToken()
+      }
     }
   }
 
@@ -392,6 +657,9 @@ export class CodeTime {
     this.inter = setInterval(() => {
       this.getCurrentDuration()
     }, 20 * 1000)
+    this.activitySyncTimer = setInterval(() => {
+      void this.syncActivitySessions().catch(error => this.out.appendLine(`[Activity] Sync failed: ${error instanceof Error ? error.message : String(error)}`))
+    }, 60 * 1000)
   }
 
   private setupEventListeners(): void {
@@ -717,6 +985,7 @@ export class CodeTime {
 
   public async showActivityReport() {
     const selection = await vscode.window.showQuickPick([
+      { label: 'Sign in to sync activity', description: 'Connect reports to your Supabase account', period: 'signin' as const },
       { label: 'This week', description: 'Daily coding time for the current week', period: 'week' as const },
       { label: 'This month', description: 'Daily coding time for the current month', period: 'month' as const },
       { label: 'This year', description: 'Monthly coding time for the current year', period: 'year' as const },
@@ -729,14 +998,140 @@ export class CodeTime {
       return
     }
 
+    if (selection.period === 'signin') {
+      try {
+        await this.startSupabaseSignIn()
+      }
+      catch (error) {
+        vscode.window.showErrorMessage(`Ember: Supabase sign-in failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return
+    }
+
+    const period = selection.period
+    try {
+      const accessToken = await this.getSupabaseAccessToken()
+      if (accessToken) {
+        await this.syncActivitySessions()
+        if (this.activityTracker.getPendingSessionCount() > 0) {
+          vscode.window.showWarningMessage('Ember: Some local sessions are still syncing; this report may not include them yet.')
+        }
+        const currentAccessToken = await this.getSupabaseAccessToken()
+        if (!currentAccessToken) {
+          throw new Error('Supabase session expired. Sign in again to view synced reports.')
+        }
+        const remoteItems = await this.getRemoteActivityItems(period, currentAccessToken)
+        await vscode.window.showQuickPick(remoteItems, {
+          title: `Ember Time - ${selection.label}`,
+          placeHolder: remoteItems.length > 0 ? 'Synced activity from your Supabase account' : 'No activity found for this period',
+        })
+        return
+      }
+    }
+    catch (error) {
+      vscode.window.showErrorMessage(`Ember: Could not load synced activity: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+
+    vscode.window.showWarningMessage('Showing activity stored on this device only. Sign in to sync reports across devices.')
     const sessions = this.activityTracker.getSessions()
-    const items = selection.period === 'timeline'
+    const items = period === 'timeline'
       ? getTimelineItems(sessions)
-      : getPeriodItems(sessions, selection.period)
+      : getPeriodItems(sessions, period)
     await vscode.window.showQuickPick(items, {
       title: `Ember Time - ${selection.label}`,
       placeHolder: items.length > 0 ? 'Coding activity is stored locally on this device' : 'No coding activity recorded for this period yet',
     })
+  }
+
+  private async getRemoteActivityItems(period: ActivityPeriod | 'timeline', accessToken: string): Promise<vscode.QuickPickItem[]> {
+    const { url, anonKey } = this.getSupabaseConfig()
+    const headers = { apikey: anonKey, Authorization: `Bearer ${accessToken}` }
+    if (period === 'timeline') {
+      const today = new Date()
+      const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 29)
+      const from = start.toISOString()
+      const response = await this.apiRequest('GET', `/functions/v1/coding-activity/timeline?from=${encodeURIComponent(from)}&limit=100`, undefined, {
+        baseUrl: url,
+        headers,
+      })
+      const result = JSON.parse(response.body) as { sessions: Array<{
+        started_at: string
+        ended_at: string
+        active_seconds: number
+        project: string
+        languages: string[]
+        event_count: number
+      }> }
+      return result.sessions.map((session) => {
+        const startedAt = new Date(session.started_at)
+        return {
+          label: `${startedAt.toLocaleString()} — ${formatActivityDuration(session.active_seconds)}`,
+          description: `${session.project} · ${session.languages.join(', ') || 'Unknown language'} · ${session.event_count} activity events · last active ${new Date(session.ended_at).toLocaleTimeString()}`,
+        }
+      })
+    }
+
+    const { start, end } = getPeriodRange(period)
+    const from = getActivityDateKey(start)
+    const to = getActivityDateKey(new Date(end.getTime() - 1))
+    const response = await this.apiRequest('GET', `/functions/v1/coding-activity/reports?from=${from}&to=${to}`, undefined, {
+      baseUrl: url,
+      headers,
+    })
+    const report = JSON.parse(response.body) as ActivityReportResponse
+    const items: vscode.QuickPickItem[] = [
+      {
+        label: `Total: ${formatActivityDuration(report.total_active_seconds)}`,
+        description: `${report.total_sessions} sessions synced across your devices`,
+      },
+    ]
+    let reportDays = report.days
+    if (period === 'year') {
+      const byMonth: Record<string, { active_seconds: number, session_count: number }> = {}
+      for (const day of report.days) {
+        const month = day.date.slice(0, 7)
+        const summary = byMonth[month] ?? { active_seconds: 0, session_count: 0 }
+        summary.active_seconds += day.active_seconds
+        summary.session_count += day.session_count
+        byMonth[month] = summary
+      }
+      reportDays = Array.from({ length: 12 }, (_, index) => {
+        const month = `${start.getFullYear()}-${String(index + 1).padStart(2, '0')}`
+        return { date: month, ...(byMonth[month] ?? { active_seconds: 0, session_count: 0 }) }
+      })
+    }
+    else {
+      const byDate = new Map(report.days.map(day => [day.date, day]))
+      const numberOfDays = Math.round(
+        (Date.UTC(end.getFullYear(), end.getMonth(), end.getDate())
+          - Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) / (24 * 60 * 60 * 1000),
+      )
+      reportDays = Array.from({ length: numberOfDays }, (_, index) => {
+        const date = getActivityDateKey(new Date(start.getFullYear(), start.getMonth(), start.getDate() + index))
+        const summary = byDate.get(date)
+        return {
+          date,
+          active_seconds: summary?.active_seconds ?? 0,
+          session_count: summary?.session_count ?? 0,
+        }
+      })
+    }
+    for (const day of reportDays) {
+      const date = new Date(`${day.date}${period === 'year' ? '-01' : ''}T00:00:00`)
+      const dateOptions: Intl.DateTimeFormatOptions = period === 'year'
+        ? { month: 'long' }
+        : { month: 'short', day: 'numeric' }
+      if (period === 'week') {
+        dateOptions.weekday = 'short'
+      }
+      const label = date.toLocaleDateString(undefined, dateOptions)
+      items.push({
+        label: `${label}: ${formatActivityDuration(day.active_seconds)}`,
+        description: `${day.date} · ${day.session_count} sessions`,
+      })
+    }
+    return items
   }
 
   public dispose() {
@@ -745,6 +1140,7 @@ export class CodeTime {
     this.queue?.dispose()
     void this.activityTracker.flush()
     clearInterval(this.inter)
+    clearInterval(this.activitySyncTimer)
   }
 }
 

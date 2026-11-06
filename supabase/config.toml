@@ -1,0 +1,4 @@
+project_id = "tvbiqpxhlxnpinhspvnn"
+
+[functions.coding-activity]
+verify_jwt = true
