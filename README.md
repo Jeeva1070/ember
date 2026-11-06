@@ -44,15 +44,9 @@ Your coding time will begin tracking immediately in the status bar at the bottom
 
 ---
 
-## 🎛️ Status Bar Modes
+## 🎛️ Daily Status Bar
 
-Click on the status bar or press `Cmd + Shift + P` $\rightarrow$ **`Ember: Select status bar info`** to toggle:
-
-| Mode | Description |
-| :--- | :--- |
-| **`Total`** *(Default)* | Cumulative all-time coding duration across all sessions. |
-| **`Today`** | Time spent coding today (resets every midnight in your local timezone). |
-| **`24h`** | Rolling code time over the preceding 24-hour period. |
+The status bar shows today's tracked coding time. It uses your local calendar day, refreshes periodically, and resets to zero when the date changes.
 
 ---
 
@@ -75,7 +69,6 @@ Open your VS Code Settings (`Cmd + ,`) and search for `ember`:
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `ember.statusBarInfo` | `string` | `"Total"` | Time display mode: `Total`, `Today`, or `24h`. |
 | `ember.serverEntrypoint` | `string` | *(Ember Cloud)* | Backend reporting endpoint for synchronization. |
 | `ember.obfuscateFilenames` | `boolean` | `false` | Mask file names in activity logs for heightened privacy. |
 | `ember.ignoreProjects` | `array` | `[]` | List of project names or glob patterns to exclude from tracking. |
@@ -90,7 +83,6 @@ Open your VS Code Settings (`Cmd + ,`) and search for `ember`:
 | Command | Action |
 | :--- | :--- |
 | **`Ember: Enter token`** | Configure or update your user token. |
-| **`Ember: Select status bar info`** | Switch between Today, Total, and 24h view. |
 | **`Ember: Show Status & Sync Info`** | View sync status, queue depth, and quick actions. |
 | **`Ember: Browse dashboard`** | Open your personal analytics dashboard. |
 

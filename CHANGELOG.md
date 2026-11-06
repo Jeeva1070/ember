@@ -1,3 +1,9 @@
+## v0.14.2
+
+### Fixes
+
+- Make the status bar show today's coding time and reset at local midnight.
+
 ## v0.14.0
 
 [v0.13.4...v0.14.0](https://github.com/datreks/codetime-vscode/compare/v0.13.4...v0.14.0)

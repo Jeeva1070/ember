@@ -58,9 +58,6 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ember.getToken', () => {
       codetime.setToken()
     }),
-    vscode.commands.registerCommand('ember.codeTimeInStatusBar', () => {
-      codetime.codeTimeInStatBar()
-    }),
     vscode.commands.registerCommand('ember.status', () => {
       codetime.showStatusInfo()
     }),
@@ -84,9 +81,6 @@ export async function activate(context: vscode.ExtensionContext) {
     // Backward-compatibility aliases for codetime.*
     vscode.commands.registerCommand('codetime.getToken', () => {
       vscode.commands.executeCommand('ember.getToken')
-    }),
-    vscode.commands.registerCommand('codetime.codeTimeInStatusBar', () => {
-      vscode.commands.executeCommand('ember.codeTimeInStatusBar')
     }),
     vscode.commands.registerCommand('codetime.toDashboard', () => {
       vscode.commands.executeCommand('ember.toDashboard')

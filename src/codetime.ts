@@ -25,12 +25,23 @@ export class CodeTime {
   private readonly maxAuthRetries = 3
   private queue!: EventQueue
   private latestDurationMinutes: number = 0
+  private durationDateKey = getLocalDateKey()
+  private durationRequestId = 0
   private storageDir: string = ''
+  private lastTrackedEventKey = ''
+  private lastTrackedEventTime = 0
+  private readonly eventDedupeWindowMs = 2000
 
   private debounce<T extends (...args: any[]) => void>(func: T, wait: number) {
     return (...args: Parameters<T>) => {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = setTimeout(() => func.apply(this, args), wait)
+    }
+  }
+
+  private debugLog(message: string) {
+    if (process.env.EMBER_DEBUG === '1') {
+      this.out.appendLine(message)
     }
   }
 
@@ -96,7 +107,7 @@ export class CodeTime {
           await this.apiRequest('POST', '/v3/users/event-log', event)
         }
       },
-      msg => this.out.appendLine(msg),
+      msg => this.debugLog(msg),
       heartbeatSec * 1000,
     )
 
@@ -134,10 +145,10 @@ export class CodeTime {
 
     return new Promise((resolve, reject) => {
       const startTime = Date.now()
-      this.out.appendLine(`[Req] ${method} ${path} proxy=${proxy ? this.redactUrlForLogging(proxy) : 'none'}`)
+      this.debugLog(`[Req] ${method} ${path} proxy=${proxy ? this.redactUrlForLogging(proxy) : 'none'}`)
 
       const finish = (parsed: { statusCode: number, body: string }) => {
-        this.out.appendLine(`[Req] ${parsed.statusCode} after ${Date.now() - startTime}ms`)
+        this.debugLog(`[Req] ${parsed.statusCode} after ${Date.now() - startTime}ms`)
         if (parsed.statusCode >= 400) {
           const message = parsed.statusCode === 401 ? 'Unauthorized' : `HTTP ${parsed.statusCode}`
           const err = new Error(message) as Error & { response: { statusCode: number, body: string } }
@@ -169,7 +180,7 @@ export class CodeTime {
           })
         })
         req.on('error', (e: any) => {
-          this.out.appendLine(`[Req] error after ${Date.now() - startTime}ms: ${e.message}`)
+          this.debugLog(`[Req] error after ${Date.now() - startTime}ms: ${e.message}`)
           reject(e)
         })
         req.on('timeout', () => req.destroy(new Error('request timeout')))
@@ -187,13 +198,13 @@ export class CodeTime {
       }
       catch {
         const error = new Error(`Invalid proxy URL: "${this.redactUrlForLogging(proxy)}". Expected format: http://host:port or https://host:port.`)
-        this.out.appendLine(`[Req] invalid proxy configuration: ${error.message}`)
+        this.debugLog(`[Req] invalid proxy configuration: ${error.message}`)
         reject(error)
         return
       }
       if (proxyUrlParsed.protocol !== 'http:' && proxyUrlParsed.protocol !== 'https:') {
         const error = new Error(`Unsupported proxy protocol: ${proxyUrlParsed.protocol}. Only http: and https: proxies are supported.`)
-        this.out.appendLine(`[Req] invalid proxy configuration: ${error.message}`)
+        this.debugLog(`[Req] invalid proxy configuration: ${error.message}`)
         reject(error)
         return
       }
@@ -206,7 +217,7 @@ export class CodeTime {
         ? `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(proxyUrlParsed.username)}:${decodeURIComponent(proxyUrlParsed.password)}`).toString('base64')}`
         : ''
 
-      this.out.appendLine(`[Req] connecting to proxy ${proxyHost}:${proxyPort} (${proxyUrlParsed.protocol})`)
+      this.debugLog(`[Req] connecting to proxy ${proxyHost}:${proxyPort} (${proxyUrlParsed.protocol})`)
 
       const writeRequestAndRead = (socket: net.Socket | tls.TLSSocket, requestLine: string, extraHeaders: string[] = []) => {
         const lines = [
@@ -233,20 +244,20 @@ export class CodeTime {
             finish(parseHttpResponse(Buffer.concat(chunks)))
           }
           catch (error: any) {
-            this.out.appendLine(`[Req] parse error: ${error.message}`)
+            this.debugLog(`[Req] parse error: ${error.message}`)
             reject(error)
           }
         })
         socket.on('error', (e: any) => {
           clearTimeout(requestTimeout)
-          this.out.appendLine(`[Req] socket error: ${e.message}`)
+          this.debugLog(`[Req] socket error: ${e.message}`)
           reject(e)
         })
       }
 
       const onProxyReady = (proxySocket: net.Socket | tls.TLSSocket) => {
         if (!isHttpsTarget) {
-          this.out.appendLine(`[Req] proxy connected, sending HTTP request (absolute form)`)
+          this.debugLog(`[Req] proxy connected, sending HTTP request (absolute form)`)
           proxySocket.setTimeout(0)
           writeRequestAndRead(
             proxySocket,
@@ -256,7 +267,7 @@ export class CodeTime {
           return
         }
 
-        this.out.appendLine(`[Req] proxy connected, sending CONNECT`)
+        this.debugLog(`[Req] proxy connected, sending CONNECT`)
         const connectLines = [
           `CONNECT ${targetAuthority} HTTP/1.1`,
           `Host: ${targetAuthority}`,
@@ -277,7 +288,7 @@ export class CodeTime {
           proxySocket.removeListener('data', onConnectData)
           const headerStr = connectBuf.slice(0, idx).toString('utf8')
           const statusLine = headerStr.split('\r\n')[0]
-          this.out.appendLine(`[Req] proxy response: ${statusLine}`)
+          this.debugLog(`[Req] proxy response: ${statusLine}`)
           const m = statusLine.match(/^HTTP\/\d\.\d (\d{3})/)
           if (!m || m[1] !== '200') {
             proxySocket.destroy()
@@ -290,11 +301,11 @@ export class CodeTime {
             proxySocket.unshift(residue)
           }
           const tlsSocket = tls.connect({ socket: proxySocket, servername: url.hostname }, () => {
-            this.out.appendLine(`[Req] TLS handshake done, sending HTTP request`)
+            this.debugLog(`[Req] TLS handshake done, sending HTTP request`)
             writeRequestAndRead(tlsSocket, `${method} ${url.pathname + url.search} HTTP/1.1`)
           })
           tlsSocket.on('error', (e: any) => {
-            this.out.appendLine(`[Req] TLS error: ${e.message}`)
+            this.debugLog(`[Req] TLS error: ${e.message}`)
             reject(e)
           })
         }
@@ -309,7 +320,7 @@ export class CodeTime {
         reject(new Error('Proxy connection timeout'))
       })
       proxySocket.on('error', (e: any) => {
-        this.out.appendLine(`[Req] proxy socket error: ${e.code || ''} ${e.message}`)
+        this.debugLog(`[Req] proxy socket error: ${e.code || ''} ${e.message}`)
         reject(e)
       })
     })
@@ -365,9 +376,9 @@ export class CodeTime {
   }
 
   private init(): void {
-    this.out.appendLine(`[Init] proxy=${this.redactUrlForLogging(this.getProxyUrl())}`)
-    this.out.appendLine(`[Init] serverEntrypoint=${this.getConfig<string>('serverEntrypoint', '')}`)
-    this.out.appendLine(`[Init] token=${this.token ? `***${this.token.slice(-4)}` : '(empty)'}`)
+    this.debugLog(`[Init] proxy=${this.redactUrlForLogging(this.getProxyUrl())}`)
+    this.debugLog(`[Init] serverEntrypoint=${this.getConfig<string>('serverEntrypoint', '')}`)
+    this.debugLog(`[Init] token=${this.token ? `***${this.token.slice(-4)}` : '(empty)'}`)
 
     this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Initializing...')}`
     this.statusBar.command = 'ember.status'
@@ -489,7 +500,14 @@ export class CodeTime {
         const sanitizedRelativePath = sanitizeRelativePath(relativeFilePath, obfuscate)
 
         if (sanitizedRelativePath) {
-          const time = Date.now()
+          const now = Date.now()
+          const eventKey = `${workspaceName}:${sanitizedRelativePath}:${eventName}`
+          if (eventKey === this.lastTrackedEventKey && now - this.lastTrackedEventTime < this.eventDedupeWindowMs) {
+            return
+          }
+          this.lastTrackedEventKey = eventKey
+          this.lastTrackedEventTime = now
+
           const origin = getGitOriginUrl()
           const branch = getGitCurrentBranch()
           const data: CodeEvent = {
@@ -499,7 +517,7 @@ export class CodeTime {
             absoluteFile: obfuscate ? undefined : absoluteFilePath,
             editor: vscode.env.appName,
             platform: this.osName,
-            eventTime: time,
+            eventTime: now,
             eventType: eventName,
             platformArch: this.platformArch,
             gitOrigin: origin,
@@ -507,7 +525,7 @@ export class CodeTime {
             operationType: this.getOperationType(eventName),
           }
 
-          this.out.appendLine(JSON.stringify(data))
+          this.debugLog(JSON.stringify(data))
 
           if (this.token === '') {
             this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Without Token')}`
@@ -527,13 +545,13 @@ export class CodeTime {
     this.authRetryCount++
 
     if (this.authRetryCount <= this.maxAuthRetries) {
-      this.out.appendLine(`Authentication failed, retrying (${this.authRetryCount}/${this.maxAuthRetries})...`)
+      this.debugLog(`Authentication failed, retrying (${this.authRetryCount}/${this.maxAuthRetries})...`)
       this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Auth Failed')}`
       this.statusBar.tooltip = vscode.l10n.t('Ember: Authentication retry, please wait...')
       this.statusBar.command = 'ember.getToken'
     }
     else {
-      this.out.appendLine('Max authentication retries exceeded, token invalid')
+      this.debugLog('Max authentication retries exceeded, token invalid')
       this.handleTokenInvalid()
     }
   }
@@ -569,13 +587,25 @@ export class CodeTime {
     }
 
     tooltip.appendMarkdown(`---\n\n`)
-    tooltip.appendMarkdown(`[📊 Dashboard](command:ember.toDashboard) &nbsp;|&nbsp; [⚙️ Change View](command:ember.codeTimeInStatusBar) &nbsp;|&nbsp; [ℹ️ Status Info](command:ember.status)`)
+    tooltip.appendMarkdown(`[📊 Dashboard](command:ember.toDashboard) &nbsp;|&nbsp; [ℹ️ Status Info](command:ember.status)`)
 
     this.statusBar.tooltip = tooltip
   }
 
   private getCurrentDuration(showSuccess = false) {
-    const key = this.getConfig<string>('statusBarInfo', 'Total')
+    const key = 'Today'
+    const dateKey = getLocalDateKey()
+    if (dateKey !== this.durationDateKey) {
+      this.durationDateKey = dateKey
+      this.latestDurationMinutes = 0
+      void getDurationText(0, vscode.env.language).then((formatted) => {
+        if (this.durationDateKey === getLocalDateKey() && this.latestDurationMinutes === 0) {
+          this.statusBar.text = `$(watch) ${formatted}`
+          this.updateStatusBarTooltip(formatted, key)
+        }
+      })
+    }
+
     if (this.token === '') {
       this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Without Token')}`
       this.statusBar.tooltip = vscode.l10n.t('Enter Token')
@@ -589,13 +619,20 @@ export class CodeTime {
     }
 
     this.statusBar.command = 'ember.status'
-    const minutes = getMinutes(key)
+    const minutes = getMinutesSinceLocalMidnight()
+    const requestId = ++this.durationRequestId
     this.apiRequest('GET', `/v3/users/self/minutes?minutes=${minutes}`).then(async (res: any) => {
+      if (requestId !== this.durationRequestId || dateKey !== getLocalDateKey()) {
+        return
+      }
       const data = JSON.parse(res.body)
       const { minutes } = data
       this.latestDurationMinutes = minutes
-      this.out.appendLine(`Current duration: ${minutes} minutes`)
+      this.debugLog(`Current duration: ${minutes} minutes`)
       const formatted = await getDurationText(minutes, currentLanguage)
+      if (requestId !== this.durationRequestId || dateKey !== getLocalDateKey()) {
+        return
+      }
       this.statusBar.text = `$(watch) ${formatted}`
       this.updateStatusBarTooltip(formatted, key)
       this.resetAuthRetryCount()
@@ -603,11 +640,14 @@ export class CodeTime {
         vscode.window.showInformationMessage(vscode.l10n.t('Ember: Token validation succeeded'))
       }
     }).catch((error: any) => {
+      if (requestId !== this.durationRequestId || dateKey !== getLocalDateKey()) {
+        return
+      }
       if (error.response?.statusCode === 401) {
         this.handleAuthError()
       }
       else {
-        this.out.appendLine(`[Duration] Network error: ${error.message || error}`)
+        this.debugLog(`[Duration] Network error: ${error.message || error}`)
         this.statusBar.text = `$(clock) ${vscode.l10n.t('Ember: Network Error')}`
         this.statusBar.tooltip = vscode.l10n.t('Ember: Network connection failed')
         this.statusBar.command = 'ember.status'
@@ -615,44 +655,9 @@ export class CodeTime {
     })
   }
 
-  public codeTimeInStatBar() {
-    vscode.window
-      .showQuickPick(
-        [
-          vscode.l10n.t('Total code time'),
-          vscode.l10n.t('24h code time'),
-          vscode.l10n.t('Today code time'),
-        ],
-        {},
-      )
-      .then((v) => {
-        let key = 'Total'
-        switch (v) {
-          case vscode.l10n.t('24h code time'): {
-            key = '24h'
-            break
-          }
-          case vscode.l10n.t('Today code time'): {
-            key = 'Today'
-            break
-          }
-          default: {
-            break
-          }
-        }
-        vscode.workspace
-          .getConfiguration('ember')
-          .update('statusBarInfo', key, true)
-          .then(() => {
-            vscode.workspace.getConfiguration('codetime').update('statusBarInfo', key, true)
-            this.getCurrentDuration()
-          })
-      })
-  }
-
   public async showStatusInfo() {
     const stats = this.queue.getStats()
-    const mode = this.getConfig<string>('statusBarInfo', 'Total')
+    const mode = 'Today'
     const lang = vscode.env.language
     const duration = await getDurationText(this.latestDurationMinutes, lang)
     const tokenDisplay = this.token ? `Active (***${this.token.slice(-4)})` : 'Not Configured'
@@ -679,10 +684,6 @@ export class CodeTime {
         description: 'View graphs, languages, and project statistics',
       },
       {
-        label: `$(gear) Switch Display Mode (Today / 24h / Total)`,
-        description: `Currently showing: ${mode}`,
-      },
-      {
         label: `$(sync) Force Sync Pending Events Now`,
         description: `Trigger immediate queue flush`,
       },
@@ -702,9 +703,6 @@ export class CodeTime {
     }
     else if (selected.label.includes('Auth Token')) {
       this.setToken()
-    }
-    else if (selected.label.includes('Switch Display Mode')) {
-      this.codeTimeInStatBar()
     }
     else if (selected.label.includes('Force Sync Pending Events')) {
       await this.queue.flush()
@@ -769,29 +767,13 @@ function decodeChunked(buf: Buffer): Buffer {
   return Buffer.concat(out)
 }
 
-function getMinutes(key: string) {
-  let minutes = 60 * 24
-  switch (key) {
-    case 'Today': {
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-      const now = new Date(new Date().toLocaleString('en-US', { timeZone: tz }))
-      const hours = now.getHours()
-      minutes = now.getMinutes()
-      minutes += hours * 60
-      break
-    }
-    case 'Total': {
-      minutes = 60 * 24 * 365 * 100
-      break
-    }
-    case '24h': {
-      minutes = 60 * 24
-      break
-    }
-    default: {
-      minutes = 60 * 24 * 365 * 100
-      break
-    }
-  }
-  return minutes
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getMinutesSinceLocalMidnight(date = new Date()) {
+  return date.getHours() * 60 + date.getMinutes()
 }
