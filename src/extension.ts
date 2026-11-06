@@ -61,6 +61,9 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ember.status', () => {
       codetime.showStatusInfo()
     }),
+    vscode.commands.registerCommand('ember.activityReport', () => {
+      codetime.showActivityReport()
+    }),
     vscode.commands.registerCommand('ember.toDashboard', () => {
       const url = `ember://dashboard`
       vscode.env.openExternal(vscode.Uri.parse(url)).then(

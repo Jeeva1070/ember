@@ -1,3 +1,4 @@
+import type { ActivityPeriod, CodingSession } from './activityTracker'
 import type { CodeEvent } from './types'
 import { Buffer } from 'node:buffer'
 import http from 'node:http'
@@ -9,6 +10,7 @@ import process from 'node:process'
 import tls from 'node:tls'
 import osName from 'os-name'
 import * as vscode from 'vscode'
+import { ActivityTracker, getLocalDateKey as getActivityDateKey, getDailyActivity, getPeriodRange } from './activityTracker'
 import * as events from './events'
 import { getDurationText } from './getDurationText'
 import { isProjectIgnored, sanitizeRelativePath, shouldIgnoreFile } from './privacy'
@@ -24,6 +26,7 @@ export class CodeTime {
   private authRetryCount = 0
   private readonly maxAuthRetries = 3
   private queue!: EventQueue
+  private activityTracker: ActivityTracker
   private latestDurationMinutes: number = 0
   private durationDateKey = getLocalDateKey()
   private durationRequestId = 0
@@ -94,6 +97,7 @@ export class CodeTime {
     this.state = state
     this.secrets = secrets
     this.storageDir = storageDir
+    this.activityTracker = new ActivityTracker(state, msg => this.debugLog(msg))
 
     const heartbeatSec = this.getConfig<number>('heartbeatInterval', 30)
 
@@ -507,6 +511,7 @@ export class CodeTime {
           }
           this.lastTrackedEventKey = eventKey
           this.lastTrackedEventTime = now
+          this.activityTracker.recordActivity(now, workspaceName || '[untitled workspace]', lang)
 
           const origin = getGitOriginUrl()
           const branch = getGitCurrentBranch()
@@ -710,12 +715,134 @@ export class CodeTime {
     }
   }
 
+  public async showActivityReport() {
+    const selection = await vscode.window.showQuickPick([
+      { label: 'This week', description: 'Daily coding time for the current week', period: 'week' as const },
+      { label: 'This month', description: 'Daily coding time for the current month', period: 'month' as const },
+      { label: 'This year', description: 'Monthly coding time for the current year', period: 'year' as const },
+      { label: 'Timeline', description: 'Recent coding sessions from the last 30 days', period: 'timeline' as const },
+    ], {
+      title: 'Ember Time - Coding Activity',
+      placeHolder: 'Choose a period or view the recent timeline',
+    })
+    if (!selection) {
+      return
+    }
+
+    const sessions = this.activityTracker.getSessions()
+    const items = selection.period === 'timeline'
+      ? getTimelineItems(sessions)
+      : getPeriodItems(sessions, selection.period)
+    await vscode.window.showQuickPick(items, {
+      title: `Ember Time - ${selection.label}`,
+      placeHolder: items.length > 0 ? 'Coding activity is stored locally on this device' : 'No coding activity recorded for this period yet',
+    })
+  }
+
   public dispose() {
     this.statusBar.dispose()
     this.disposable?.dispose()
     this.queue?.dispose()
+    void this.activityTracker.flush()
     clearInterval(this.inter)
   }
+}
+
+function getPeriodItems(sessions: CodingSession[], period: ActivityPeriod): vscode.QuickPickItem[] {
+  const { start, end } = getPeriodRange(period)
+  const daily = getDailyActivity(sessions)
+  const totals: Record<string, number> = {}
+
+  for (const [date, seconds] of Object.entries(daily)) {
+    const day = new Date(`${date}T00:00:00`)
+    if (day >= start && day < end) {
+      const key = period === 'year' ? date.slice(0, 7) : date
+      totals[key] = (totals[key] ?? 0) + seconds
+    }
+  }
+
+  const keys: string[] = []
+  if (period === 'year') {
+    for (let month = 0; month < 12; month++) {
+      keys.push(`${start.getFullYear()}-${String(month + 1).padStart(2, '0')}`)
+    }
+  }
+  else {
+    const numberOfDays = Math.round(
+      (Date.UTC(end.getFullYear(), end.getMonth(), end.getDate())
+        - Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) / (24 * 60 * 60 * 1000),
+    )
+    for (let index = 0; index < numberOfDays; index++) {
+      const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index)
+      keys.push(getActivityDateKey(day))
+    }
+  }
+
+  const totalSeconds = Object.values(totals).reduce((sum, seconds) => sum + seconds, 0)
+  let title = 'Year total'
+  if (period === 'week') {
+    title = 'Week total'
+  }
+  else if (period === 'month') {
+    title = 'Month total'
+  }
+  const firstKey = getActivityDateKey(start)
+  const endKey = getActivityDateKey(new Date(end.getTime() - 1))
+  const periodSessions = sessions.filter(session =>
+    Object.keys(session.dailyActiveSeconds).some(date => date >= firstKey && date <= endKey),
+  ).length
+  const items: vscode.QuickPickItem[] = [
+    { label: `${title}: ${formatActivityDuration(totalSeconds)}`, description: `${periodSessions} sessions tracked on this device` },
+  ]
+
+  for (const key of keys) {
+    let label: string
+    if (period === 'year') {
+      label = new Date(`${key}-01T00:00:00`).toLocaleDateString(undefined, { month: 'long' })
+    }
+    else {
+      const dateOptions: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
+      if (period === 'week') {
+        dateOptions.weekday = 'short'
+      }
+      label = new Date(`${key}T00:00:00`).toLocaleDateString(undefined, dateOptions)
+    }
+    items.push({
+      label: `${label}: ${formatActivityDuration(totals[key] ?? 0)}`,
+      description: key,
+    })
+  }
+  return items
+}
+
+function getTimelineItems(sessions: CodingSession[]): vscode.QuickPickItem[] {
+  const today = new Date()
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 29)
+  const startKey = getActivityDateKey(start)
+  const timeline = sessions
+    .filter(session => session.lastActivityAt <= Date.now()
+      && (session.startedAt >= start.getTime() || Object.keys(session.dailyActiveSeconds).some(date => date >= startKey)))
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .slice(0, 100)
+
+  return timeline.map((session) => {
+    const started = new Date(session.startedAt)
+    const ended = new Date(session.lastActivityAt)
+    const languages = session.languages.length > 0 ? session.languages.join(', ') : 'Unknown language'
+    return {
+      label: `${started.toLocaleString()} — ${formatActivityDuration(session.activeSeconds)}`,
+      description: `${session.project} · ${languages} · ${session.eventCount} activity events · last active ${ended.toLocaleTimeString()}`,
+    }
+  })
+}
+
+function formatActivityDuration(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+  return `${minutes}m`
 }
 
 function parseHttpResponse(buf: Buffer): { statusCode: number, body: string } {

@@ -45,6 +45,10 @@
         "title": "%command.status%"
       },
       {
+        "command": "ember.activityReport",
+        "title": "Ember: Coding activity report"
+      },
+      {
         "command": "codetime.getToken",
         "title": "%command.getToken%"
       },

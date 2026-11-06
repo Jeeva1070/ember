@@ -48,6 +48,12 @@ Your coding time will begin tracking immediately in the status bar at the bottom
 
 The status bar shows today's tracked coding time. It uses your local calendar day, refreshes periodically, and resets to zero when the date changes.
 
+## 📈 Coding Activity Reports
+
+Run **Ember: Coding activity report** from the Command Palette to view this week's daily totals, this month's daily totals, this year's monthly totals, or a recent session timeline. A coding session continues while activity in the same project is no more than 15 minutes apart. Active time is estimated from activity events, capped at two minutes per interval, so idle gaps are not counted.
+
+These reports are currently stored locally in VS Code and are not yet synchronized across devices. The Supabase migration at `supabase/migrations/20261106120000_coding_activity.sql` adds the session and per-day tables, row-level security, and a daily summary view. Apply it to your Supabase project, then update the server-side event ingestion function to write sessions and daily activity rows before enabling server-backed reports. That function is not part of this extension workspace.
+
 ---
 
 ## 🔐 Privacy & Security
